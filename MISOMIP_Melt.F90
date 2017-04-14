@@ -28,36 +28,32 @@ SUBROUTINE BilinealInterp(xP,yP,NETCDFValues,meltInterp, dxarg, dyarg, xInitarg,
         REAL(KIND=dp), INTENT(IN), OPTIONAL ::  DXarg , DYarg, xInitarg, yInitarg
 
 
-        if( .not. present(DXarg))then
+        !Default values for MISOMIP
+        if( .not. present(DXarg)) then
             DX=2000.0
         else
             DX = DXarg
         end if
 
-        if( .not. present(DYarg))then
+        if( .not. present(DYarg)) then
             DY=2000.0
         else
             DY = DYarg
         end if
 
-        if( .not. present(xInitarg))then
+        if( .not. present(xInitarg)) then
             xInit = -319000.0
         else 
             xInit = xInitarg
         end if
 
-        if( .not. present(yInitarg))then
+        if( .not. present(yInitarg)) then
             yInit = -1000.0
         else
             yInit = yInitarg
         end if
 
-        !if(associated(NETCDFValues)) then
-        !        print *, 'associated'
-        !else
-        !        print *, 'not associated'
-        !end if
-
+        !Where the node is found in the NetCDF grid?
 
         iIndex = int(floor((xP - xInit ) / DX)+1)
         iFract = (xP - xInit) - (iIndex-1) * DX
@@ -80,15 +76,6 @@ SUBROUTINE BilinealInterp(xP,yP,NETCDFValues,meltInterp, dxarg, dyarg, xInitarg,
                 meltInterp = 0.0_dp
         end if
 
-        if(xp.eq.458000.0_dp .and. yp.eq.41000.0_dp)then
-                Print*, 'datas', iIndex, jIndex, iFract, jFract, melt11, melt12, melt21, melt22, meltInterp, NETCDFValues(iIndex,jIndex), NETCDFValues(iIndex,jIndex+1), NETCDFValues(iIndex+1,jIndex), NETCDFValues(iIndex+1,jIndex+1)
-        end if
-
-        !Print *, 'My PE: ', ParEnv % MyPE
-
-        if (ParEnv % MyPE .eq. 14) then
-                !Print *, NETCDFValues(iIndex,:)
-        end if
 
 End subroutine BilinealInterp
 end module subs
@@ -154,14 +141,13 @@ SUBROUTINE MISOMIP_Melt( Model,Solver,dt,Transient )
   FILE_NAME_DRAFT = GetString(Solver % Values,'Draft file',Got)
   FILE_NAME = GetString(Solver % Values,'Melt rates file',Got)
 
-  Print *, 'filename', FILE_NAME_DRAFT
-
   MeltPerm => MeltVar % Perm
   Melt => MeltVar % Values
 
   GMPerm => GMVar % Perm
   GM => GMVar % Values
 
+  ! GET NTCDF DIMENSIONS FOR ALLOCATION
   CALL check(nf90_open(FILE_NAME,NF90_NOWRITE,ncid))
   CALL check(nf90_open(FILE_NAME_DRAFT,NF90_NOWRITE,ncidDraft))
   status1=nf90_inq_dimid(ncid,"x",dimid1)
@@ -174,6 +160,9 @@ SUBROUTINE MISOMIP_Melt( Model,Solver,dt,Transient )
   allocate(DATAPOINTER(lenX,lenY))
   allocate(xVarNC(lenX))
 
+
+  !GET Variables
+
   status1=nf90_inq_varid(ncid,meltname,varid)
 
   status1=nf90_get_var(ncid,varid,meltVarNC)
@@ -182,29 +171,15 @@ SUBROUTINE MISOMIP_Melt( Model,Solver,dt,Transient )
 
   status1=nf90_get_var(ncidDraft,varXid,xVarNC)
 
-  Print *, 'status ', status1
-
   DATAPOINTER => meltvarNC
 
-  if (ParEnv % MyPE .eq. 14) then
-         Print *, ' x=69 ', 'x = ', xVarNC(69), meltVarNC(69,:)
-         Print *, ' x=69 ', 'x = ', xVarNC(70), meltVarNC(70,:)
-         Print *, ' x=71 ', 'x = ', xVarNC(71), meltVarNC(71,:)
-         Print *, ' x=72 ', meltVarNC(72,:)
-         Print *, ' x=73 ', meltVarNC(73,:)
-         Print *, ' x=74 ', meltVarNC(74,:)
-
-  end if
 
   DO node=1, nMax 
         xP =  Mesh % Nodes % x(node)
         yP =  Mesh % Nodes % y(node)
         if (GM(GMPerm(node)) .lt. 0.0) then
-                !Print *, 'hol', xP, yP, meltvarNC(80,20), DATAPointer(80,20), BiLinealInterp(xP,yP,DATAPointer)
-                !Print *, 'hol', xP, yP, meltvarNC(80,20), DATAPointer(80,20)
                 CALL BiLinealInterp(xP,yP,meltvarNC,meltInT)
-                Melt(MeltPerm(node)) = meltInt * 1e-3 * 3600 * 24 * 365
-                !Melt(MeltPerm(node)) = -100.0_dp
+                Melt(MeltPerm(node)) = meltInt * 1e-3 * 3600 * 24 * 365 ! from mm/s to m/yr
         else
                 Melt(MeltPerm(node)) = 0.0_dp
         end if
