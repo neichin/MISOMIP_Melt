@@ -113,12 +113,12 @@ SUBROUTINE MISOMIP_Melt_Consv( Model,Solver,dt,Transient )
   INTEGER , POINTER :: MeltPerm(:), GMPerm(:), NodeIndexes(:)
   REAL(KIND=dp) , POINTER :: Melt(:),GM(:)
   REAL(KIND=dp) , POINTER ::DATAPointer(:,:)
-  INTEGER :: NMax, ncid, node, ncidDraft, e, t, n
+  INTEGER :: NMax, ncid, node, ncidDraft, e, t, n, i, j
   REAL(KIND=dp) ::  xP , yP, meltInt
 
   LOGICAL,SAVE :: Initialized = .FALSE.
   LOGICAL,SAVE :: ExtrudedMesh=.False.
-  LOGICAL :: Found, Got, stat
+  LOGICAL :: Found, Got, stat, Parallel
 
   CHARACTER(len = 200) :: FILE_NAME 
   CHARACTER(len = 200) :: FILE_NAME_DRAFT
@@ -126,9 +126,11 @@ SUBROUTINE MISOMIP_Melt_Consv( Model,Solver,dt,Transient )
 
   CHARACTER(len = 200), parameter :: meltname='fwfisf', xname='x', yname='y'
   REAL(KIND=dp), allocatable, target :: meltvarNC(:,:), xVarNC(:), yVarNC(:)
-  INTEGER :: varXid, varYid, varid, dimid1, dimid2, lenX, lenY, status1, res
+  REAL(KIND=dp), allocatable :: MELT_NEMO_AREA(:,:)
+  INTEGER :: varXid, varYid, varid, dimid1, dimid2, lenX, lenY, status1, res, ierr
 
-  REAL(KIND=dp) :: x_NC_Init, x_NC_Fin, y_NC_Init, y_NC_Fin, x_NC_Res, y_NC_Res, localInteg, Integ
+  REAL(KIND=dp) :: x_NC_Init, x_NC_Fin, y_NC_Init, y_NC_Fin, x_NC_Res, y_NC_Res, localInteg, Integ, Integ_Reduced
+  REAL(KIND=dp) :: Melt_NEMO_Integ , Melt_NEMO_Integ_Reduced, Factor_Corr
 
 
 !------------------------------------------------------------------------------
@@ -185,6 +187,7 @@ SUBROUTINE MISOMIP_Melt_Consv( Model,Solver,dt,Transient )
   status1=nf90_inquire_dimension(ncid,dimid2,len=lenY)
 
   allocate(meltvarNC(lenX,lenY))
+  allocate(MELT_NEMO_AREA(lenX,lenY))
   allocate(xVarNC(lenX))
   allocate(yVarNC(lenY))
 
@@ -211,7 +214,18 @@ SUBROUTINE MISOMIP_Melt_Consv( Model,Solver,dt,Transient )
   x_NC_Res = xVarNC(2)-xVarNC(1)
   y_NC_Res = yVarNC(2)-yVarNC(1)
 
-  PRINT *, 'valores: ',x_NC_Init, ' , ', x_NC_Fin, ' , ',y_NC_Init, ' , ',y_NC_Fin, ' , '
+  Melt_NEMO_Integ = 0.0_dp
+
+  DO i=1,lenX 
+        DO j=1,lenY
+                Melt_NEMO_Area(i,j) = meltvarNC(i,j) * X_NC_Res * Y_NC_Res * 1e-3 * 3600 * 24 * 365 !Conversion m/yr
+        END DO
+  END DO
+
+  Melt_NEMO_Integ = SUM(Melt_NEMO_Area)
+
+  ! TEST
+  !Factor_Corr = 0.986180651443858
 
   DO node=1, nMax 
         xP =  Mesh % Nodes % x(node)
@@ -229,7 +243,10 @@ SUBROUTINE MISOMIP_Melt_Consv( Model,Solver,dt,Transient )
 
         if (GM(GMPerm(node)) .lt. 0.0) then
                 CALL BiLinealInterp(xP,yP,meltvarNC,meltInT, x_NC_Res, y_NC_Res, x_NC_Init, y_NC_Init)
-                Melt(MeltPerm(node)) = meltInt * 1e-3 * 3600 * 24 * 365 ! from mm/s to m/yr
+                Melt(MeltPerm(node)) = meltInt * 1e-3 * 3600 * 24 * 365 ! from mm/s to m/yra
+!!!TEST
+                !Melt(MeltPerm(node)) = meltInt * 1e-3 * 3600 * 24 * 365 /  Factor_Corr ! frommm/s to m/yra
+
         else
                 Melt(MeltPerm(node)) = 0.0_dp
         end if
@@ -266,8 +283,20 @@ SUBROUTINE MISOMIP_Melt_Consv( Model,Solver,dt,Transient )
      Integ = Integ + localInteg
    END DO
 
-   Print *, 'Integral = ', Integ
+    Parallel = .FALSE.
+    IF ( ASSOCIATED( Solver % Matrix % ParMatrix ) ) THEN
+            IF ( Solver %  Matrix % ParMatrix % ParEnv % PEs > 1 )  THEN
+                    Parallel = .TRUE.
+            END IF
+    END IF
 
+   IF (Parallel) THEN
+        CALL MPI_ALLREDUCE(Integ,Integ_Reduced,1,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+   END IF
+
+   Factor_Corr = Integ_Reduced / Melt_NEMO_Integ
+
+   Melt(MeltPerm(:)) = Melt(MeltPerm(:)) / Factor_Corr
 
 !!!
 END SUBROUTINE MISOMIP_Melt_Consv
