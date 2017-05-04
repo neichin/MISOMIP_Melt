@@ -42,7 +42,7 @@ SUBROUTINE BilinealInterp(xP,yP,NETCDFValues,meltInterp, dxarg, dyarg, xInitarg,
         end if
 
         if( .not. present(xInitarg)) then
-            xInit = -319000.0
+            xInit = 319000.0
         else 
             xInit = xInitarg
         end if
@@ -112,13 +112,16 @@ SUBROUTINE MISOMIP_Melt( Model,Solver,dt,Transient )
   LOGICAL,SAVE :: ExtrudedMesh=.False.
   LOGICAL :: Found, Got
 
-  CHARACTER(len = 200) :: FILE_NAME = '/scratch/cnt0021/gge6066/imerino/NEMO/WORK/nemo_ISOMIP/nemo_ISOMIP_EXP3_TEST/OUTPUT_1/ISOMIP-EXP3_TEST_1d_00000101_00000630_SBC.nc'
-  CHARACTER(len = 200) :: FILE_NAME_DRAFT = '/scratch/cnt0021/gge6066/imerino/NEMO/WORK/nemo_ISOMIP/nemo_ISOMIP_EXP3_TEST/isf_draft_meter.nc'
+  CHARACTER(len = 200) :: FILE_NAME 
+  CHARACTER(len = 200) :: FILE_NAME_DRAFT
   CHARACTER(LEN=MAX_NAME_LEN) :: SolverName='InitMELTMISOMIP'
 
-  CHARACTER(len = 200), parameter :: meltname='fwfisf', xname='x'
-  REAL(KIND=dp), allocatable, target :: meltvarNC(:,:), xVarNC(:)
-  INTEGER :: varXid, varid, dimid1, dimid2, lenX, lenY, status1, res
+  CHARACTER(len = 200), parameter :: meltname='fwfisf', xname='x', yname='y'
+  REAL(KIND=dp), allocatable, target :: meltvarNC(:,:), xVarNC(:), yVarNC(:)
+  INTEGER :: varXid, varYid, varid, dimid1, dimid2, lenX, lenY, status1, res
+
+  REAL(KIND=dp) :: x_NC_Init, x_NC_Fin, y_NC_Init, y_NC_Fin, x_NC_Res, y_NC_Res
+
 
 !------------------------------------------------------------------------------
   Mesh => Model % Mesh
@@ -139,7 +142,18 @@ SUBROUTINE MISOMIP_Melt( Model,Solver,dt,Transient )
   END IF
 
   FILE_NAME_DRAFT = GetString(Solver % Values,'Draft file',Got)
+
+  IF (.NOT. Got) then
+     Message='Draft File not found'
+     CALL FATAL(SolverName,Message)
+  END IF
+
   FILE_NAME = GetString(Solver % Values,'Melt rates file',Got)
+
+  IF (.NOT. Got) then
+     Message='Melt Rates File not found'
+     CALL FATAL(SolverName,Message)
+  END IF
 
   MeltPerm => MeltVar % Perm
   Melt => MeltVar % Values
@@ -157,8 +171,8 @@ SUBROUTINE MISOMIP_Melt( Model,Solver,dt,Transient )
   status1=nf90_inquire_dimension(ncid,dimid2,len=lenY)
 
   allocate(meltvarNC(lenX,lenY))
-  allocate(DATAPOINTER(lenX,lenY))
   allocate(xVarNC(lenX))
+  allocate(yVarNC(lenY))
 
 
   !GET Variables
@@ -171,14 +185,36 @@ SUBROUTINE MISOMIP_Melt( Model,Solver,dt,Transient )
 
   status1=nf90_get_var(ncidDraft,varXid,xVarNC)
 
-  DATAPOINTER => meltvarNC
+  status1=nf90_inq_varid(ncidDraft,yname,varYid)
 
+  status1=nf90_get_var(ncidDraft,varYid,yVarNC)
+
+  x_NC_Init = MINVAL(xVarNC)
+  x_NC_Fin = MAXVAL(xVarNC)
+  y_NC_Init = MINVAL(yVarNC)
+  y_NC_Fin = MAXVAL(yVarNC)
+
+  x_NC_Res = xVarNC(2)-xVarNC(1)
+  y_NC_Res = yVarNC(2)-yVarNC(1)
+
+  PRINT *, 'valores: ',x_NC_Init, ' , ', x_NC_Fin, ' , ',y_NC_Init, ' , ',y_NC_Fin, ' , '
 
   DO node=1, nMax 
         xP =  Mesh % Nodes % x(node)
         yP =  Mesh % Nodes % y(node)
+
+        if (xP .gt. x_NC_Fin .or. xP .lt. x_NC_Init) then
+                Melt(MeltPerm(node)) = 0.0_dp   
+                cycle
+        end if
+
+        if (yP .gt. y_NC_Fin .or. yP .lt. y_NC_Init) then
+                Melt(MeltPerm(node)) = 0.0_dp
+                cycle
+        end if
+
         if (GM(GMPerm(node)) .lt. 0.0) then
-                CALL BiLinealInterp(xP,yP,meltvarNC,meltInT)
+                CALL BiLinealInterp(xP,yP,meltvarNC,meltInT, x_NC_Res, y_NC_Res, x_NC_Init, y_NC_Init)
                 Melt(MeltPerm(node)) = meltInt * 1e-3 * 3600 * 24 * 365 ! from mm/s to m/yr
         else
                 Melt(MeltPerm(node)) = 0.0_dp
