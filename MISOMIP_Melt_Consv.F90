@@ -120,7 +120,7 @@ SUBROUTINE MISOMIP_Melt_Consv( Model,Solver,dt,Transient )
   LOGICAL,SAVE :: ExtrudedMesh=.False.
   LOGICAL :: Found, Got, stat, Parallel
 
-  CHARACTER(len = 200) :: FILE_NAME 
+  CHARACTER(len = 200) :: FILE_NAME,meltValue
   CHARACTER(len = 200) :: FILE_NAME_DRAFT
   CHARACTER(LEN=MAX_NAME_LEN) :: SolverName='InitMELTMISOMIP'
 
@@ -298,6 +298,11 @@ SUBROUTINE MISOMIP_Melt_Consv( Model,Solver,dt,Transient )
 
    Melt(MeltPerm(:)) = Melt(MeltPerm(:)) / Factor_Corr
 
+   IF (Solver % Matrix % ParMatrix % ParEnv % MyPE == 0) then
+     WddRITE(meltValue,'(F20.2)') Integ_Reduced 
+     Message='TOTAL_MELT_RATE: '//meltValue
+     CALL INFO(SolverName,Message,Level=1)
+   END IF
 !!!
 END SUBROUTINE MISOMIP_Melt_Consv
 
