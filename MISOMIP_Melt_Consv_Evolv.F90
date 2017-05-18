@@ -93,15 +93,16 @@ SUBROUTINE NEAREST_Melt_Rate(node, MeltRates, MeltRatesPerm, Nodes_X , Nodes_Y, 
         REAL(KIND=dp), INTENT(OUT) :: MeltVal
 
         INTEGER, ALLOCATABLE:: NearestNodes(:)
+        REAL(KIND=dp), ALLOCATABLE :: NearestDIST(:)
         INTEGER :: counter, n, i
         REAL :: distMin, dist
 
         REAL :: TOL=1000 
 
-        Print *, 'EN interpolation ', Nodes_X(node), Nodes_Y(node), MeltRates(MeltRatesPerm(node))
 
-        allocate(nearestnodes(nNodes))
+        allocate(nearestnodes(nNodes),Nearestdist(nNodes))  !!Too much allocattion, but the size depends on the tolerance, Improve this part of the code later
         nearestnodes (:) = 0.0
+        nearestdist (:) = 0.0
         counter = 0
         distMin = 1e15
         dist = 0.0
@@ -110,27 +111,31 @@ SUBROUTINE NEAREST_Melt_Rate(node, MeltRates, MeltRatesPerm, Nodes_X , Nodes_Y, 
                 if (MeltRates(MeltRatesPerm(n)) .ne. 0.0_dp) then
                   dist = SQRT((Nodes_X(n) - Nodes_X(node)) * (Nodes_X(n) - Nodes_X(node)) + (Nodes_Y(n) - Nodes_Y(node)) * (Nodes_Y(n) - Nodes_Y(node)))
                   if (dist .lt. distMin) then
-                        Print *, 'Dist LT: ', n, Nodes_X(n), Nodes_Y(n), dist, distMin
+        !               Print *, 'Dist LT: ', n, Nodes_X(n), Nodes_Y(n), dist, distMin
                         distMin = dist
-                        nearestnodes(:) = 0
-                        nearestnodes(1) = n
-                        counter = 1
-                        cycle
-                  else if (ABS(dist - distMin) .le. TOL) then
-                        Print *, 'Dist EQ: ', n, Nodes_X(n), Nodes_Y(n), dist, distMin, MeltRates(MeltRatesPerm(n))
-                        counter = counter + 1
-                        nearestnodes(counter) = n
                   end if
                 end if
+        END DO
+        counter = 0
+        Do n = 1, nNodes
+              if (MeltRates(MeltRatesPerm(n)) .ne. 0.0_dp) then
+                dist = SQRT((Nodes_X(n) - Nodes_X(node)) * (Nodes_X(n) - Nodes_X(node)) + (Nodes_Y(n) - Nodes_Y(node)) * (Nodes_Y(n) - Nodes_Y(node)))
+                if (ABS(dist - distMin) .le. TOL) then
+                        counter = counter + 1
+                        Print *, 'Dist EQ: ', n, Nodes_X(n), Nodes_Y(n), dist, distMin, MeltRates(MeltRatesPerm(n))
+                        nearestnodes(counter) = n
+                        nearestdist(counter) = dist
+                end if
+              end if
         end do
 
         Print *, 'End of DO: ', nearestnodes, counter, distMin
-
+        TotalDist = sum(nearestdist)
         do i=1,counter
-                MeltVal = MeltVal + MeltRates(MeltRatesPerm(nearestnodes(i)))
-                Print *, 'Melt Rate ' , nearestnodes(i), " = " , MeltRates(MeltRatesPerm(nearestnodes(i)))
+                MeltVal = MeltVal + MeltRates(MeltRatesPerm(nearestnodes(i))) * (TotalDist - nearestdist(i))
+                NormInterpol = NormInterpol + (TotalDist - nearestdist(i))
         end do
-        MeltVal = MeltVal / counter
+        MeltVal = MeltVal/ NormInterpol
         Print *, "MeltVal Final: " , MeltVal
                                  
 END SUBROUTINE NEAREST_Melt_Rate
@@ -193,28 +198,36 @@ SUBROUTINE MISOMIP_Melt_Consv( Model,Solver,dt,Transient )
 
 !------------------------------------------------------------------------------
 
+ SAVE NMAX
+
+ Mesh => Model % Mesh
+
+ GMVar => VariableGet( Model % Mesh % Variables, 'GroundedMask')
+ IF (.NOT.ASSOCIATED(GMVar)) THEN
+     Message='GroundedMask not found'
+     CALL FATAL(SolverName,Message)
+ END IF
+
+ GMPerm => GMVar % Perm
+ GM => GMVar % Values
+
+ MeltVar => VariableGet( Model % Mesh % Variables, 'Melt')
+ IF (.NOT.ASSOCIATED(MeltVar)) THEN
+     Message='Melt not found'
+     CALL FATAL(SolverName,Message)
+ END IF
+
+ MeltPerm => MeltVar % Perm
+ Melt => MeltVar % Values
+
+ IF (FIRSTIME) THEN
 
   NMAX=Solver % Mesh % NumberOfNodes
   ALLOCATE(VisitedNode(NMAX),  &
           Basis(Model % MaxElementNodes),  &
           dBasisdx(Model % MaxElementNodes,3))
 
-  Mesh => Model % Mesh
-
   NMax = Solver % Mesh % NumberOfNodes
-
-!!! get required variables Zb,Zs,H
-
-  MeltVar => VariableGet( Model % Mesh % Variables, 'Melt')
-  IF (.NOT.ASSOCIATED(MeltVar)) THEN
-     Message='Melt not found'
-     CALL FATAL(SolverName,Message)
-  END IF
-  GMVar => VariableGet( Model % Mesh % Variables, 'GroundedMask')
-  IF (.NOT.ASSOCIATED(GMVar)) THEN
-     Message='GroundedMask not found'
-     CALL FATAL(SolverName,Message)
-  END IF
 
   FILE_NAME_DRAFT = GetString(Solver % Values,'Draft file',Got)
 
@@ -230,13 +243,6 @@ SUBROUTINE MISOMIP_Melt_Consv( Model,Solver,dt,Transient )
      CALL FATAL(SolverName,Message)
   END IF
 
-  MeltPerm => MeltVar % Perm
-  Melt => MeltVar % Values
-
-  GMPerm => GMVar % Perm
-  GM => GMVar % Values
-
-
   ! GET NTCDF DIMENSIONS FOR ALLOCATION
   CALL check(nf90_open(FILE_NAME,NF90_NOWRITE,ncid))
   CALL check(nf90_open(FILE_NAME_DRAFT,NF90_NOWRITE,ncidDraft))
@@ -247,10 +253,10 @@ SUBROUTINE MISOMIP_Melt_Consv( Model,Solver,dt,Transient )
   status1=nf90_inquire_dimension(ncid,dimid2,len=lenY)
 
   allocate(meltvarNC(lenX,lenY))
-  IF (FIRSTIME) allocate(MELT_NEMO_AREA(lenX,lenY))
-  IF (FIRSTIME) allocate(GROUNDED_NODES(NMAX))
-  IF (FIRSTIME) allocate(GMOLD(NMAX))
-  IF (FIRSTIME) allocate(GMOLDPERM(NMAX))
+  allocate(MELT_NEMO_AREA(lenX,lenY))
+  allocate(GROUNDED_NODES(NMAX))
+  allocate(GMOLD(NMAX))
+  allocate(GMOLDPERM(NMAX))
   allocate(xVarNC(lenX))
   allocate(yVarNC(lenY))
 
@@ -287,9 +293,6 @@ SUBROUTINE MISOMIP_Melt_Consv( Model,Solver,dt,Transient )
 
   Melt_NEMO_Integ = SUM(Melt_NEMO_Area)
 
-  ! TEST
-  !Factor_Corr = 0.986180651443858
-
   DO node=1, nMax 
         xP =  Mesh % Nodes % x(node)
         yP =  Mesh % Nodes % y(node)
@@ -307,9 +310,6 @@ SUBROUTINE MISOMIP_Melt_Consv( Model,Solver,dt,Transient )
         if (GM(GMPerm(node)) .lt. 0.0) then
                 CALL BiLinealInterp(xP,yP,meltvarNC,meltInT, x_NC_Res, y_NC_Res, x_NC_Init, y_NC_Init)
                 Melt(MeltPerm(node)) = meltInt * 1e-3 * 3600 * 24 * 365 ! from mm/s to m/yra
-!!!TEST
-                !Melt(MeltPerm(node)) = meltInt * 1e-3 * 3600 * 24 * 365 /  Factor_Corr ! frommm/s to m/yra
-
         else
                 Melt(MeltPerm(node)) = 0.0_dp
         end if
@@ -366,26 +366,39 @@ SUBROUTINE MISOMIP_Melt_Consv( Model,Solver,dt,Transient )
      Message='TOTAL_MELT_RATE: '//meltValue
      CALL INFO(SolverName,Message,Level=1)
    END IF
-   
+ 
+ END IF !!FIRSTIME  
+
+ GMVar => VariableGet( Model % Mesh % Variables, 'GroundedMask')
+ IF (.NOT.ASSOCIATED(GMVar)) THEN
+     Message='GroundedMask not found'
+     CALL FATAL(SolverName,Message)
+ END IF
+
+ GMPerm => GMVar % Perm
+ GM => GMVar % Values
+
+ MeltVar => VariableGet( Model % Mesh % Variables, 'Melt')
+ IF (.NOT.ASSOCIATED(MeltVar)) THEN
+     Message='Melt not found'
+     CALL FATAL(SolverName,Message)
+ END IF
+
+ MeltPerm => MeltVar % Perm
+ Melt => MeltVar % Values
     
-   IF (.NOT. FIRSTIME) Then
-     PRINT *, 'En lo nuevo'
+ IF (.NOT. FIRSTIME) Then
      DO t=1,NMax
          IF ((GMOLD(GMOLDPerm(t)) .gt. 0.0) .AND. (GM(GMPerm(t))) .le. 0.0) THEN
-                PRINT *, 'Example debug: ', t, Model % Nodes % x(t), Model % Nodes % y(t)
-                if ( t .eq. 3101 ) THEN
-                        PRINT *, 'PUNTO ENTRANDO EN INTERPLOTAION'
-                        CALL NEAREST_Melt_Rate(t , Melt, MeltPerm, Model % Nodes % x, Model % Nodes % y, NMax, MeltVal)
-               END IF
+               CALL NEAREST_Melt_Rate(t , Melt, MeltPerm, Model % Nodes % x, Model % Nodes % y, NMax, MeltVal)
+               Melt(MeltPerm(t)) = MeltVal
          END IF
      END DO
-   END IF
-   
-   Print *, MeltVal
+ END IF !NOT FIRSTIME
 
-   GMOLD(:) = GM(:)
-   GMOLDPerm(:) = GMPerm(:)
-   FIRSTIME=.FALSE.
+ GMOLD(:) = GM(:)
+ GMOLDPerm(:) = GMPerm(:)
+ FIRSTIME=.FALSE.
 !!!
 END SUBROUTINE MISOMIP_Melt_Consv
 
