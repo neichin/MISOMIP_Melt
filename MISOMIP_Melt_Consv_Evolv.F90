@@ -80,44 +80,58 @@ SUBROUTINE BilinealInterp(xP,yP,NETCDFValues,meltInterp, dxarg, dyarg, xInitarg,
 End subroutine BilinealInterp
 
 SUBROUTINE NEAREST_Melt_Rate(node, MeltRates, MeltRatesPerm, Nodes_X , Nodes_Y, NNodes, MeltVal)
+        USE types
+        USE CoordinateSystems
+        USE SolverUtils
+        USE ElementDescription
+        USE DefUtils
 
         INTEGER, INTENT(IN) :: node, NNodes
-        REAL(dp), POINTER, INTENT(IN) :: NODES_X(:), NODES_Y
-        REAL(TYPE=dp), POINTER, INTENT(IN) :: MeltRates(:)
+        REAL(KIND=dp), POINTER, INTENT(IN) :: NODES_X(:), NODES_Y(:)
+        REAL(KIND=dp), POINTER, INTENT(IN) :: MeltRates(:)
         INTEGER, POINTER, INTENT(IN) :: MeltRatesPerm(:)
-        REAL(Type=dp), INTENT(OUT) :: MeltVal
+        REAL(KIND=dp), INTENT(OUT) :: MeltVal
 
-        INTEGER, ALLOCATABLE:: NearestNodes()
+        INTEGER, ALLOCATABLE:: NearestNodes(:)
         INTEGER :: counter, n, i
         REAL :: distMin, dist
+
+        REAL :: TOL=1000 
+
+        Print *, 'EN interpolation ', Nodes_X(node), Nodes_Y(node), MeltRates(MeltRatesPerm(node))
 
         allocate(nearestnodes(nNodes))
         nearestnodes (:) = 0.0
         counter = 0
         distMin = 1e15
         dist = 0.0
+        MeltVal = 0.0
         Do n = 1, nNodes
-                dist = (Nodes_X(n) - Nodes_X(node)) * (Nodes_X(n) - Nodes_X(node)) + (Nodes_Y(n) - Nodes_Y(node)) * (Nodes_Y(n) - Nodes_Y(node))
-                if (dist .lt. distMin) then
+                if (MeltRates(MeltRatesPerm(n)) .ne. 0.0_dp) then
+                  dist = SQRT((Nodes_X(n) - Nodes_X(node)) * (Nodes_X(n) - Nodes_X(node)) + (Nodes_Y(n) - Nodes_Y(node)) * (Nodes_Y(n) - Nodes_Y(node)))
+                  if (dist .lt. distMin) then
+                        Print *, 'Dist LT: ', n, Nodes_X(n), Nodes_Y(n), dist, distMin
                         distMin = dist
                         nearestnodes(:) = 0
                         nearestnodes(1) = n
                         counter = 1
-                        continue
-                end if
-
-                if (dist .eq. distMin) then
+                        cycle
+                  else if (ABS(dist - distMin) .le. TOL) then
+                        Print *, 'Dist EQ: ', n, Nodes_X(n), Nodes_Y(n), dist, distMin, MeltRates(MeltRatesPerm(n))
                         counter = counter + 1
                         nearestnodes(counter) = n
-                        continue
+                  end if
                 end if
         end do
 
+        Print *, 'End of DO: ', nearestnodes, counter, distMin
+
         do i=1,counter
-                MeltVal = MeltVal + MeltRates(MeltPerm(nearestnodes(i)))
+                MeltVal = MeltVal + MeltRates(MeltRatesPerm(nearestnodes(i)))
+                Print *, 'Melt Rate ' , nearestnodes(i), " = " , MeltRates(MeltRatesPerm(nearestnodes(i)))
         end do
         MeltVal = MeltVal / counter
-        return MeltVal
+        Print *, "MeltVal Final: " , MeltVal
                                  
 END SUBROUTINE NEAREST_Melt_Rate
 
@@ -160,7 +174,7 @@ SUBROUTINE MISOMIP_Melt_Consv( Model,Solver,dt,Transient )
   REAL(KIND=dp) ::  xP , yP, meltInt
 
   LOGICAL,SAVE :: Initialized = .FALSE.
-  LOGICAL,SAVE :: ExtrudedMesh=.False. , FirstTime=.TRUE.
+  LOGICAL,SAVE :: ExtrudedMesh=.False. , FirsTime=.TRUE.
   LOGICAL :: Found, Got, stat, Parallel
 
   CHARACTER(len = 200) :: FILE_NAME,meltValue
@@ -169,17 +183,16 @@ SUBROUTINE MISOMIP_Melt_Consv( Model,Solver,dt,Transient )
 
   CHARACTER(len = 200), parameter :: meltname='fwfisf', xname='x', yname='y'
   REAL(KIND=dp), allocatable, target :: meltvarNC(:,:), xVarNC(:), yVarNC(:)
-  REAL(KIND=dp), allocatable, SAVE :: MELT_NEMO_AREA(:,:), GROUNDED_NODES
+  INTEGER, allocatable, save :: GMOLDPerm(:)
+  REAL(KIND=dp), allocatable, SAVE :: MELT_NEMO_AREA(:,:), GROUNDED_NODES(:), GMOLD(:)
   INTEGER :: varXid, varYid, varid, dimid1, dimid2, lenX, lenY, status1, res, ierr
 
   REAL(KIND=dp) :: x_NC_Init, x_NC_Fin, y_NC_Init, y_NC_Fin, x_NC_Res, y_NC_Res, localInteg, Integ, Integ_Reduced
-  REAL(KIND=dp) :: Melt_NEMO_Integ , Melt_NEMO_Integ_Reduced, Factor_Corr
+  REAL(KIND=dp) :: Melt_NEMO_Integ , Melt_NEMO_Integ_Reduced, Factor_Corr, MeltVal
 
 
 !------------------------------------------------------------------------------
 
-
-  SAVE FIRSTTIME, GROUNDED_NODES
 
   NMAX=Solver % Mesh % NumberOfNodes
   ALLOCATE(VisitedNode(NMAX),  &
@@ -223,6 +236,7 @@ SUBROUTINE MISOMIP_Melt_Consv( Model,Solver,dt,Transient )
   GMPerm => GMVar % Perm
   GM => GMVar % Values
 
+
   ! GET NTCDF DIMENSIONS FOR ALLOCATION
   CALL check(nf90_open(FILE_NAME,NF90_NOWRITE,ncid))
   CALL check(nf90_open(FILE_NAME_DRAFT,NF90_NOWRITE,ncidDraft))
@@ -233,7 +247,10 @@ SUBROUTINE MISOMIP_Melt_Consv( Model,Solver,dt,Transient )
   status1=nf90_inquire_dimension(ncid,dimid2,len=lenY)
 
   allocate(meltvarNC(lenX,lenY))
-  allocate(MELT_NEMO_AREA(lenX,lenY))
+  IF (FIRSTIME) allocate(MELT_NEMO_AREA(lenX,lenY))
+  IF (FIRSTIME) allocate(GROUNDED_NODES(NMAX))
+  IF (FIRSTIME) allocate(GMOLD(NMAX))
+  IF (FIRSTIME) allocate(GMOLDPERM(NMAX))
   allocate(xVarNC(lenX))
   allocate(yVarNC(lenY))
 
@@ -349,27 +366,26 @@ SUBROUTINE MISOMIP_Melt_Consv( Model,Solver,dt,Transient )
      Message='TOTAL_MELT_RATE: '//meltValue
      CALL INFO(SolverName,Message,Level=1)
    END IF
-
+   
+    
    IF (.NOT. FIRSTIME) Then
-
-     DO e=1,Solver % NumberOfActiveElements
-       Element => GetActiveElement(e)
-       CALL GetElementNodes( ElementNodes )
-       n = GetElementNOFNodes()
-       NodeIndexes => Element % NodeIndexes
-       
-       DO t=1,n
-         !!IF ((GMOLD(GMPerm(NodeIndexes(t))) .gt. 0.0) && (GM(GMPerm(NodeIndexes(t)))) .le. 0.0) THEN
-                CALL NEAREST_Melt_Rate(NodeIndexes(t) , Melt, MeltPerm, Model % Nodes % x, Model % Nodes % y, NNodes, MeltVal)
-         !!END IF
-
-       END DO
-
+     PRINT *, 'En lo nuevo'
+     DO t=1,NMax
+         IF ((GMOLD(GMOLDPerm(t)) .gt. 0.0) .AND. (GM(GMPerm(t))) .le. 0.0) THEN
+                PRINT *, 'Example debug: ', t, Model % Nodes % x(t), Model % Nodes % y(t)
+                if ( t .eq. 3101 ) THEN
+                        PRINT *, 'PUNTO ENTRANDO EN INTERPLOTAION'
+                        CALL NEAREST_Melt_Rate(t , Melt, MeltPerm, Model % Nodes % x, Model % Nodes % y, NMax, MeltVal)
+               END IF
+         END IF
      END DO
-
-
-
    END IF
+   
+   Print *, MeltVal
+
+   GMOLD(:) = GM(:)
+   GMOLDPerm(:) = GMPerm(:)
+   FIRSTIME=.FALSE.
 !!!
 END SUBROUTINE MISOMIP_Melt_Consv
 
