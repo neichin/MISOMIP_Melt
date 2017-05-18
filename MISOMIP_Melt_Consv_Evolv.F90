@@ -307,7 +307,7 @@ SUBROUTINE MISOMIP_Melt_Consv( Model,Solver,dt,Transient )
                 cycle
         end if
 
-        if (GM(GMPerm(node)) .le. 0.0) then
+        if (GM(GMPerm(node)) .lt. 0.5) then
                 CALL BiLinealInterp(xP,yP,meltvarNC,meltInT, x_NC_Res, y_NC_Res, x_NC_Init, y_NC_Init)
                 Melt(MeltPerm(node)) = meltInt * 1e-3 * 3600 * 24 * 365 ! from mm/s to m/yra
         else
@@ -389,7 +389,7 @@ SUBROUTINE MISOMIP_Melt_Consv( Model,Solver,dt,Transient )
     
  IF (.NOT. FIRSTIME) Then
      DO t=1,NMax
-         IF ((GMOLD(GMOLDPerm(t)) .gt. 0.0) .AND. (GM(GMPerm(t))) .le. 0.0) THEN
+         IF ((GMOLD(GMOLDPerm(t)) .gt. 0.5) .AND. (GM(GMPerm(t))) .lt. 0.5) THEN
                CALL NEAREST_Melt_Rate(t , Melt, MeltPerm, Model % Nodes % x, Model % Nodes % y, NMax, MeltVal)
                Melt(MeltPerm(t)) = MeltVal
          END IF

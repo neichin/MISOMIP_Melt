@@ -213,7 +213,7 @@ SUBROUTINE MISOMIP_Melt( Model,Solver,dt,Transient )
                 cycle
         end if
 
-        if (GM(GMPerm(node)) .le. 0.0) then
+        if (GM(GMPerm(node)) .lt. 0.5) then
                 CALL BiLinealInterp(xP,yP,meltvarNC,meltInT, x_NC_Res, y_NC_Res, x_NC_Init, y_NC_Init)
                 Melt(MeltPerm(node)) = meltInt * 1e-3 * 3600 * 24 * 365 ! from mm/s to m/yr
         else
