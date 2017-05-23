@@ -144,7 +144,7 @@ SUBROUTINE MISOMIP_Melt_Consv( Model,Solver,dt,Transient )
 
   NMax = Solver % Mesh % NumberOfNodes
 
-!!! get required variables Zb,Zs,H
+!!! VARIABLES NEEDED
 
   MeltVar => VariableGet( Model % Mesh % Variables, 'Melt')
   IF (.NOT.ASSOCIATED(MeltVar)) THEN
@@ -196,7 +196,7 @@ SUBROUTINE MISOMIP_Melt_Consv( Model,Solver,dt,Transient )
   allocate(yVarNC(lenY))
 
 
-  !GET Variables
+  !GET Variables from NetCDF file
 
   status1=nf90_inq_varid(ncid,meltname,varid)
 
@@ -218,21 +218,21 @@ SUBROUTINE MISOMIP_Melt_Consv( Model,Solver,dt,Transient )
   x_NC_Res = xVarNC(2)-xVarNC(1)
   y_NC_Res = yVarNC(2)-yVarNC(1)
 
+  ! Time average of melt rates:
   MeltVarNC_Av = SUM(meltvarNC,dim=3)/lenTime
 
+  ! Integrate melt in the NetCDF Grid, From kg/m2/s (melt flux) to m/yr (melt
+  ! rate in the units used by Elmer model)
   Melt_NEMO_Integ = 0.0_dp
- 
   DO i=1,lenX 
         DO j=1,lenY
                 Melt_NEMO_Area(i,j) = MeltvarNC_Av(i,j) * X_NC_Res * Y_NC_Res * 1e-3 * 3600 * 24 * 365  !Conversion m/yr
         END DO
   END DO
-  
+  !!!!!!
 
+  ! Sum computation for the conservative interpolation purpose
   Melt_NEMO_Integ = SUM(Melt_NEMO_Area)
-
-  ! TEST
-  !Factor_Corr = 0.986180651443858
 
   DO node=1, nMax 
         xP =  Mesh % Nodes % x(node)
@@ -247,13 +247,11 @@ SUBROUTINE MISOMIP_Melt_Consv( Model,Solver,dt,Transient )
                 Melt(MeltPerm(node)) = 0.0_dp
                 cycle
         end if
-
+        
+        !Melt is at the grounding line and floatin points
         if (GM(GMPerm(node)) .lt. 0.5) then
                 CALL BiLinealInterp(xP,yP,meltvarNC_Av,meltInT, x_NC_Res, y_NC_Res, x_NC_Init, y_NC_Init)
                 Melt(MeltPerm(node)) = meltInt * 1e-3 * 3600 * 24 * 365 ! from mm/s to m/yra
-!!!TEST
-                !Melt(MeltPerm(node)) = meltInt * 1e-3 * 3600 * 24 * 365 /  Factor_Corr ! frommm/s to m/yra
-
         else
                 Melt(MeltPerm(node)) = 0.0_dp
         end if
@@ -264,6 +262,8 @@ SUBROUTINE MISOMIP_Melt_Consv( Model,Solver,dt,Transient )
 
   Integ = 0.0_dp  
 
+  ! Integrate melt rate over the Elmer grid for conservative interpolation
+  ! purpose
   DO e=1,Solver % NumberOfActiveElements
      Element => GetActiveElement(e)
      CALL GetElementNodes( ElementNodes )
@@ -299,19 +299,21 @@ SUBROUTINE MISOMIP_Melt_Consv( Model,Solver,dt,Transient )
 
    IF (Parallel) THEN
         CALL MPI_ALLREDUCE(Integ,Integ_Reduced,1,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,ierr)
+   ELSE
+        Integ_Reduced = Integ
    END IF
 
-   Factor_Corr = Integ_Reduced / Melt_NEMO_Integ
+   ! Compute factor to fix Elmer melt rates in order to exactly match NEMO melt rates
 
+   Factor_Corr = Integ_Reduced / Melt_NEMO_Integ
    Melt(MeltPerm(:)) = Melt(MeltPerm(:)) / Factor_Corr
+
 
    IF (Solver % Matrix % ParMatrix % ParEnv % MyPE == 0) then
      WRITE(meltValue,'(F20.2)') Integ_Reduced 
      Message='TOTAL_MELT_RATE: '//meltValue
      CALL INFO(SolverName,Message,Level=1)
    END IF
-
-  Print *, 'Integ NEMO', Melt_NEMO_Integ, lenTime
 
 !!!
 END SUBROUTINE MISOMIP_Melt_Consv
