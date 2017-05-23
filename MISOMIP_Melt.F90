@@ -117,8 +117,8 @@ SUBROUTINE MISOMIP_Melt( Model,Solver,dt,Transient )
   CHARACTER(LEN=MAX_NAME_LEN) :: SolverName='InitMELTMISOMIP'
 
   CHARACTER(len = 200), parameter :: meltname='fwfisf', xname='x', yname='y'
-  REAL(KIND=dp), allocatable, target :: meltvarNC(:,:), xVarNC(:), yVarNC(:)
-  INTEGER :: varXid, varYid, varid, dimid1, dimid2, lenX, lenY, status1, res
+  REAL(KIND=dp), allocatable, target :: meltvarNC_Av(:,:), meltvarNC(:,:,:), xVarNC(:), yVarNC(:)
+  INTEGER :: varXid, varYid, varid, dimid1, dimid2, dimid3, lenX, lenY, lenTime, status1, res
 
   REAL(KIND=dp) :: x_NC_Init, x_NC_Fin, y_NC_Init, y_NC_Fin, x_NC_Res, y_NC_Res
 
@@ -170,7 +170,11 @@ SUBROUTINE MISOMIP_Melt( Model,Solver,dt,Transient )
   status1=nf90_inq_dimid(ncid,"y",dimid2)
   status1=nf90_inquire_dimension(ncid,dimid2,len=lenY)
 
-  allocate(meltvarNC(lenX,lenY))
+  status1=nf90_inq_dimid(ncid,"time_counter",dimid3)
+  status1=nf90_inquire_dimension(ncid,dimid3,len=lenTime)
+
+  allocate(meltvarNC(lenX,lenY,lenTime))
+  allocate(meltvarNC_Av(lenX,lenY))
   allocate(xVarNC(lenX))
   allocate(yVarNC(lenY))
 
@@ -197,7 +201,7 @@ SUBROUTINE MISOMIP_Melt( Model,Solver,dt,Transient )
   x_NC_Res = xVarNC(2)-xVarNC(1)
   y_NC_Res = yVarNC(2)-yVarNC(1)
 
-  PRINT *, 'valores: ',x_NC_Init, ' , ', x_NC_Fin, ' , ',y_NC_Init, ' , ',y_NC_Fin, ' , '
+  MeltVarNC_Av = SUM(meltvarNC,dim=3)/lenTime
 
   DO node=1, nMax 
         xP =  Mesh % Nodes % x(node)
@@ -214,7 +218,7 @@ SUBROUTINE MISOMIP_Melt( Model,Solver,dt,Transient )
         end if
 
         if (GM(GMPerm(node)) .lt. 0.5) then
-                CALL BiLinealInterp(xP,yP,meltvarNC,meltInT, x_NC_Res, y_NC_Res, x_NC_Init, y_NC_Init)
+                CALL BiLinealInterp(xP,yP,meltvarNC_Av, meltInT, x_NC_Res, y_NC_Res, x_NC_Init, y_NC_Init)
                 Melt(MeltPerm(node)) = meltInt * 1e-3 * 3600 * 24 * 365 ! from mm/s to m/yr
         else
                 Melt(MeltPerm(node)) = 0.0_dp

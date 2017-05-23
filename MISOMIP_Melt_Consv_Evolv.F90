@@ -187,10 +187,10 @@ SUBROUTINE MISOMIP_Melt_Consv( Model,Solver,dt,Transient )
   CHARACTER(LEN=MAX_NAME_LEN) :: SolverName='InitMELTMISOMIP'
 
   CHARACTER(len = 200), parameter :: meltname='fwfisf', xname='x', yname='y'
-  REAL(KIND=dp), allocatable, target :: meltvarNC(:,:), xVarNC(:), yVarNC(:)
+  REAL(KIND=dp), allocatable, target :: meltvarNC_Av(:,:), meltvarNC(:,:,:), xVarNC(:), yVarNC(:), MeltTemp(:)
   INTEGER, allocatable, save :: GMOLDPerm(:)
   REAL(KIND=dp), allocatable, SAVE :: MELT_NEMO_AREA(:,:), GROUNDED_NODES(:), GMOLD(:)
-  INTEGER :: varXid, varYid, varid, dimid1, dimid2, lenX, lenY, status1, res, ierr
+  INTEGER :: varXid, varYid, varid, dimid1, dimid2, dimid3, lenX, lenY, lenTime, status1, res, ierr
 
   REAL(KIND=dp) :: x_NC_Init, x_NC_Fin, y_NC_Init, y_NC_Fin, x_NC_Res, y_NC_Res, localInteg, Integ, Integ_Reduced
   REAL(KIND=dp) :: Melt_NEMO_Integ , Melt_NEMO_Integ_Reduced, Factor_Corr, MeltVal
@@ -252,10 +252,14 @@ SUBROUTINE MISOMIP_Melt_Consv( Model,Solver,dt,Transient )
   status1=nf90_inq_dimid(ncid,"y",dimid2)
   status1=nf90_inquire_dimension(ncid,dimid2,len=lenY)
 
-  allocate(meltvarNC(lenX,lenY))
+  status1=nf90_inq_dimid(ncid,"time_counter",dimid3)
+  status1=nf90_inquire_dimension(ncid,dimid3,len=lenTime)
+
+  allocate(meltvarNC(lenX,lenY,lenTime))
+  allocate(meltvarNC_Av(lenX,lenY))
   allocate(MELT_NEMO_AREA(lenX,lenY))
   allocate(GROUNDED_NODES(NMAX))
-  allocate(GMOLD(NMAX))
+  allocate(GMOLD(NMAX),MeltTemp(NMax))
   allocate(GMOLDPERM(NMAX))
   allocate(xVarNC(lenX))
   allocate(yVarNC(lenY))
@@ -283,11 +287,13 @@ SUBROUTINE MISOMIP_Melt_Consv( Model,Solver,dt,Transient )
   x_NC_Res = xVarNC(2)-xVarNC(1)
   y_NC_Res = yVarNC(2)-yVarNC(1)
 
+  MeltVarNC_Av = SUM(meltvarNC,dim=3)/lenTime
+
   Melt_NEMO_Integ = 0.0_dp
 
   DO i=1,lenX 
         DO j=1,lenY
-                Melt_NEMO_Area(i,j) = meltvarNC(i,j) * X_NC_Res * Y_NC_Res * 1e-3 * 3600 * 24 * 365 !Conversion m/yr
+                Melt_NEMO_Area(i,j) = meltvarNC_Av(i,j) * X_NC_Res * Y_NC_Res * 1e-3 * 3600 * 24 * 365 !Conversion m/yr
         END DO
   END DO
 
@@ -308,7 +314,7 @@ SUBROUTINE MISOMIP_Melt_Consv( Model,Solver,dt,Transient )
         end if
 
         if (GM(GMPerm(node)) .lt. 0.5) then
-                CALL BiLinealInterp(xP,yP,meltvarNC,meltInT, x_NC_Res, y_NC_Res, x_NC_Init, y_NC_Init)
+                CALL BiLinealInterp(xP,yP,meltvarNC_Av,meltInT, x_NC_Res, y_NC_Res, x_NC_Init, y_NC_Init)
                 Melt(MeltPerm(node)) = meltInt * 1e-3 * 3600 * 24 * 365 ! from mm/s to m/yra
         else
                 Melt(MeltPerm(node)) = 0.0_dp
@@ -386,15 +392,18 @@ SUBROUTINE MISOMIP_Melt_Consv( Model,Solver,dt,Transient )
 
  MeltPerm => MeltVar % Perm
  Melt => MeltVar % Values
+ MeltTemp = Melt
     
  IF (.NOT. FIRSTIME) Then
      DO t=1,NMax
          IF ((GMOLD(GMOLDPerm(t)) .gt. 0.5) .AND. (GM(GMPerm(t))) .lt. 0.5) THEN
                CALL NEAREST_Melt_Rate(t , Melt, MeltPerm, Model % Nodes % x, Model % Nodes % y, NMax, MeltVal)
-               Melt(MeltPerm(t)) = MeltVal
+               MeltTemp(MeltPerm(t)) = MeltVal
          END IF
      END DO
  END IF !NOT FIRSTIME
+
+ Melt(:)=MeltTemp(:)
 
  GMOLD(:) = GM(:)
  GMOLDPerm(:) = GMPerm(:)
